@@ -1,0 +1,115 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# OSS Pulse — stack complète (production locale)
+#
+#   docker compose up --build
+#
+#   frontend   http://localhost:8080   (nginx : SPA + proxy /api et /ws)
+#   backend    http://localhost:4000   (Fastify : REST + WebSocket)
+#   ai-service http://localhost:8000   (FastAPI : prévision Holt damped trend)
+#   postgres   localhost:5432          (TimescaleDB)
+#   redis      localhost:6379
+#
+# Variables : voir .env.docker (chargé automatiquement via `env_file`).
+# Réseau    : un seul réseau bridge `osspulse` — les services se parlent par
+#             leur nom DNS (backend, ai-service, postgres, redis).
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: oss-pulse
+
+services:
+  # ── Données ──────────────────────────────────────────────────────────────
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    env_file: .env.docker
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-osspulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-osspulse}
+      POSTGRES_DB: ${POSTGRES_DB:-osspulse}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-osspulse} -d ${POSTGRES_DB:-osspulse}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks: [osspulse]
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks: [osspulse]
+
+  # ── Intelligence ─────────────────────────────────────────────────────────
+  ai-service:
+    build: ./ai-service
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=2).status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    networks: [osspulse]
+
+  # ── Application ──────────────────────────────────────────────────────────
+  backend:
+    build: ./backend
+    env_file: .env.docker
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-osspulse}:${POSTGRES_PASSWORD:-osspulse}@postgres:5432/${POSTGRES_DB:-osspulse}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379
+      AI_SERVICE_URL: http://ai-service:8000
+      HOST: 0.0.0.0
+      PORT: 4000
+      # CORS : l'origine publique du frontend conteneurisé
+      FRONTEND_URL: http://localhost:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ai-service:
+        condition: service_healthy
+    ports:
+      - "4000:4000"
+    # Migrations idempotentes à chaque démarrage, puis serveur.
+    command: sh -c "npm run migrate:up && npm run dev"
+    healthcheck:
+      # 127.0.0.1 et non localhost : dans Alpine, localhost résout d'abord en
+      # ::1 (IPv6) alors que Node n'écoute qu'en IPv4 (HOST=0.0.0.0).
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 18
+    networks: [osspulse]
+
+  # ── Présentation ─────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # URL relative : nginx du conteneur proxifie /api → backend (zéro CORS)
+        VITE_API_URL: /api/v1
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    networks: [osspulse]
+
+networks:
+  osspulse:
+    driver: bridge
+
+volumes:
+  pgdata:
