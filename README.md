@@ -1,4 +1,7 @@
-# OSS Pulse — Full-Stack · IA · Docker
+# Tech Pulse INPT — Full-Stack · IA · Docker
+
+**Idée, coaching technique et supervision :** Mr. Yann BENMAISSA  
+**Conception et développement :** Hibat Allah EL AMRANI, Khadija OUMHEND & Khadija OUANOUR
 
 > *« Quel est le **X** le plus populaire dans le domaine **Y**, dans le pays **Z** ? »*
 
